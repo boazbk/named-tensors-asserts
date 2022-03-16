@@ -311,7 +311,7 @@ class NamedTensorOp:
         in_dims = self.preprocess_exp(exp[:exp.index('->')])
         out_dims = self.preprocess_exp(exp[exp.index('->')+2:])
         T = self.assert_tensor_dims(T, in_dims, context= context)
-        T =rearrange(T, exp)
+        T =rearrange(T, self.einsumfy_exp(exp))
         T =self.assert_tensor_dims(T, out_dims, context= context)
         return T
     
