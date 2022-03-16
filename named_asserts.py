@@ -125,7 +125,7 @@ class NamedTensorOp:
     '''
 
     def __init__(self):
-        self.__dict__.update(dict(dims = {}, _enabled = True, use_named_tensors = False , bound_exp = None , dims_in = None, dims_out  = None, type_out = None))
+        self.__dict__.update(dict(dims = {}, _enabled = True,  bound_exp = None , dims_in = None, dims_out  = None, type_out = None))
     
     def __setattr__(self, __name, __value):
         if __name in self.__dict__:
@@ -140,11 +140,11 @@ class NamedTensorOp:
         else:
             raise AttributeError(f"No dimension {name}")
     
-    # def __call__(self,*args,**kwargs):
-    #     """Return a tuple while also updating dimensions from keyword arugments"""
-    #     D = {k:v for k,v in kwargs.items() if isinstance(k,str) and (k[0]!='_')}
-    #     self.set(**D)
-    #     return tuple(args + kwargs.values())
+    def __call__(self,*args,**kwargs):
+        """Return a tuple while also updating dimensions from keyword arugments"""
+        D = {k:v for k,v in kwargs.items() if isinstance(k,str) and (k[0]!='_')}
+        self.set(**D)
+        return tuple(args + tuple(kwargs.values()))
 
         
     def set(self,**vals):
@@ -164,18 +164,18 @@ class NamedTensorOp:
     def disable(self):
         self._enabled = False
 
-    def eval_dim(self,exp):
-        original_exp = exp
-        exp = '\n'.join(exp.split(';'))
+    def eval_dims(self,exp):
         try:
-            result = exec_return(exp, globals(),self.dims,allow_statement=False)
+            result = eval(
+                f"NamedTensorOp.instance()({exp})", globals(), self.dims)
         except Exception as e:
-            raise ValueError(f"Could not evaluate dimension expression: {original_exp}, error in {exp}: {e} [evaluated wrt {self.dims}]")
+            raise ValueError(f"Could not evaluate dimension expression: {exp}: {e} [evaluated wrt {self.dims}]")
         return result
     
     #https://gist.github.com/rockt/a3191f517728ea9a136a204f578d27c8
     @staticmethod
     def einsumfy_exp(exp):
+        exp = exp.replace(',',' ')
         names = set(re.split("[, \(\)]|->", exp))
         names.remove("")
 
@@ -207,50 +207,38 @@ class NamedTensorOp:
             exp2 = exp[exp.index('->')+2:]
             exp = exp[:exp.index('->')]
         exp1 = exp
-        L = self.split_list(exp1)+self.split_list(exp2)+self.split_list(exp3)
-        for n in L:
-            if (n[0]=='!'):
-                if not n[1:].isidentifier(): 
-                    raise ValueError(f"Dimension name not valid identifier: {n} in the expression {origin_exp}")
-                else:
-                    pass 
-            else:
+        for e in [exp1,exp2,exp3]:
+            e = self.preprocess_exp(e)
+            if e:
                 try:
-                    v = self.eval_dim(n)
-                except Exception as e:
-                    raise ValueError(f"Dimension expression not valid: {n} in the expression {origin_exp}: {e}")
+                    self.eval_dims(e)
+                except Exception as exception:
+                    raise ValueError(f"Dimension expression not valid: {e} in the expression {origin_exp}: {exception}")
             
             
             
 
 
     @staticmethod
-    def split_list(exp):
-        if not exp: return []
-        exp = exp.replace("[","").replace("]","")
-        
-        if ',' in exp:
-            L = exp.split(',')
-        else:
-            L = re.split("\s|(?<!\d)[,.](?!\d)",exp)
-        L = [x.strip() for x in L]
-        L = [x for x in L if x != '']
-        return L
+    def preprocess_exp(exp):
+        if not isinstance(exp,str):
+            raise ValueError(f"Expected string, got {exp} of type {type(exp)}")
+        exp = exp.strip()
+        if not exp: return exp
+        if exp[0]=='(' and exp[-1]==')':
+            exp = exp[1:-1]
+        if exp[0]=='[' and exp[-1]==']':
+            exp = exp[1:-1]
+        return exp
 
-    def assert_integer(self,I_,name):
+    def assert_integer(self,I_,exp):
         try:
             I = int(I_)
         except:
-            raise ValueError(f"{name} must be an integer, got {I}")
-        name_ = name[1:] if name[0]=='!' else name
-        if name[0]=='!':
-                if name_.isidentifier():
-                    self.set(**{name_:I})
-                else:
-                    raise AssertionError(f"Dimension name not valid identifier: {name_}")
-        else:
-            val = self.eval_dim(name_)
-            assert val == I, f"Dimension {name_} must be {I}, got {val}"
+            raise ValueError(f"{exp} must be an integer, got {I}")
+        val = self.eval_dims(exp)
+        assert len(val) == 1, f"{exp} must be a single integer, got {val}"
+        assert val[0] == I, f"Dimension {name_} must be {I}, got {val[0]}"
         return I_
 
             
@@ -258,54 +246,48 @@ class NamedTensorOp:
 
 
 
-    def assert_tensor_dims(self,T, names):
-        """Assert tensor T has the dimensions specified by names"""
+    def assert_tensor_dims(self,T, exp):
+        """Assert tensor T has the dimensions specified by exp"""
         if not self._enabled: return T
-        assert len(names)==len(T.shape), "Expected {} dims, got {}  (shape={} / names = {})".format(len(names), len(T.shape), T.shape, names)
-        new_names = list(T.names)
-        for i,name in enumerate(names):
-            name_ = name[1:] if name[0]=='!' else name
-            if T.names[i] and name_.isidentifier():
-                assert T.names[i] == name_, "Expected dim {} to be named {} but got {}  (shape={} / names = {})".format(
-                    i, name_, T.names[i], T.shape, names)
-            
-            if name[0]=='!':
-                if name_.isidentifier():
-                    self.set(**{name_:T.shape[i]})
-                else:
-                    raise AssertionError(
-                        "Invalid dimension name {}  (shape={} / names={})".format(name[1:],  T.shape, names))
-            assert self.eval_dim(name_) == T.shape[i], "Expected dim {} to be len({})={} but got {} (shape={} / names={})".format(
-                i, name, self.eval_dim(name_), T.shape[i], T.shape, names)
-        if name_.isidentifier():
-                new_names[i] = name_
-        if self.use_named_tensors:
-            return T.refine_names(*new_names)
+        try:
+            shape = self.eval_dims(exp)
+        except Exception as e:
+            raise ValueError(f"Dimension expression not valid: {exp}: {e}")
+        assert len(shape)==len(T.shape), f"Dimension expression {exp} must have the same number of dimensions as the tensor {T}, got {shape} vs {T.shape}"
+        assert shape == T.shape, f"Dimension expression {exp} must have the same dimensions as the tensor {T}, got {shape} vs {T.shape}"
         return T
     
-    def assert_model_dims(self,model,names_in,names_out):
+    def assert_model_dims(self,model,exp_in,exp_out):
         if not self._enabled: return model
-        dims = [self.eval_dim(i) for i in names_in]
+        try:
+            shape_in = self.eval_dims(exp_in)
+        except Exception as e:
+            raise ValueError(f"Dimension expression not valid: {exp_in}: {e}")
+        try:
+            shape_out = self.eval_dims(exp_out)
+        except Exception as e:
+            raise ValueError(f"Dimension expression not valid: {exp_out}: {e}")
         try:
             device = next(model.parameters()).device
-            x = torch.randn(*dims, device = device)
+            x = torch.randn(*shape_in, device = device)
         except Exception as e:
-            print(f"Error in creating input on {device} while asserting model {model} wrt {names_in}->{names_out} ({e})")
+            print(
+                f"Error in creating input on {device} while asserting model {model} wrt {shape_in}->{shape_out} ({e}, {exp_in}->{exp_out})")
             raise e
-        self.assert_tensor_dims(x,names_in)
+        self.assert_tensor_dims(x,shape_in)
         try:
             y = model(x)
         except Exception as e:
-            print(f"Error in evaluating {model} on tensor of {x.shape} (device= {device}) while asserting model {model} wrt {names_in}->{names_out} ({e})")
+            print(f"Error in evaluating {model} on tensor of {x.shape} (device= {device}) while asserting model {model} wrt {shape_in}->{shape_out} ({e}, {exp_in}->{exp_out})")
             raise e
-        self.assert_tensor_dims(y,names_out)
+        self.assert_tensor_dims(y,shape_out)
         return model
     
 
     
     def rearrange(self,T, exp):
-        in_dims = self.split_list(exp[:exp.index('->')])
-        out_dims = self.split_list(exp[exp.index('->')+2:])
+        in_dims = self.preprocess_exp(exp[:exp.index('->')])
+        out_dims = self.preprocess_exp(exp[exp.index('->')+2:])
         T = self.assert_tensor_dims(T, *in_dims)
         T =rearrange(T, exp)
         T =self.assert_tensor_dims(T, *out_dims)
@@ -314,12 +296,12 @@ class NamedTensorOp:
     def einsum(self,exp,*args):
         out_dims = None
         if exp.index(": ")>0:
-            out_dims = self.split_list(exp[exp.index(": ")+2:])
+            out_dims = self.preprocess_exp(exp[exp.index(": ")+2:])
             exp = exp[:exp.index(": ")]
         exps_in = exp[:exp.index('->')].split(',')
         assert len(exps_in) == len(args), "Expected {} args, got {}".format(len(exps_in), len(args))
         for i,T in enumerate(args):
-            self.assert_tensor_dims(T, self.split_list(exps_in[i]))
+            self.assert_tensor_dims(T, self.preprocess_exp(exps_in[i]))
         out = torch.einsum(self.einsumfy_exp(exp), *args)
         if out_dims:
             self.assert_tensor_dims(out, out_dims)
@@ -329,18 +311,23 @@ class NamedTensorOp:
         dims_in = None
         dims_out = None
         if '->' in exp:
-            dims_in = self.split_list(exp[:exp.index('->')])
+            dims_in = self.preprocess_exp(exp[:exp.index('->')])
             if ': ' in exp:
-                dims_out = self.split_list(exp[exp.index(': ')+2:])
+                dims_out = self.preprocess_exp(exp[exp.index(': ')+2:])
             else:
-                dims_out = self.split_list(exp[exp.index('->')+2:])
+                dims_out = self.preprocess_exp(exp[exp.index('->')+2:])
         else:
-            dims_in = self.split_list(exp)
+            dims_in = self.preprocess_exp(exp)
         return dims_in, dims_out
 
     
 
     def __floordiv__(self,other):
+        if isinstance(other,list) or isinstance(other, tuple):
+            if not all(isinstance(x,int) for x in other):
+                raise ValueError(f"Expected list of integers, got {other}")
+            print(f'Warning: expression is a list or tuple, interpreting as "{str(other)}"')
+            other = str(other)
         if isinstance(other, str):
             self.validate_exp(other)
             result = BoundNTOp()
@@ -374,8 +361,7 @@ class BoundNTOp:
         if not self.nt._enabled: return other
         if self.mode == "tensor":
             if isinstance(other, int):
-                assert len(self.dims_in)==1, "Expected 1 dim, got {} (dims_in={})".format(len(self.dims_in), self.dims_in)
-                return self.nt.assert_integer(other, self.dims_in[0])
+                return self.nt.assert_integer(other, self.dims_in)
             return self.nt.assert_tensor_dims(other, self.dims_in)
         if self.mode == "model":
             return self.nt.assert_model_dims(other, self.dims_in, self.dims_out)

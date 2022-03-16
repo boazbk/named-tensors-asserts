@@ -127,3 +127,25 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+# Extra things for pytorch
+*.gz
+*.tar.gz
+*/wandb/*
+wandb/*
+data/*
+saved_models/*
+tmp/*
+Random*/*
+.ipynb_checkpoints/
+__pycache__/*
+temp.pth
+.idea/*
+*.ckpt
+*.pth
+*.onnx
+*.pickle
+*.pkl
+
+
