@@ -397,7 +397,7 @@ class BoundNTOp:
         raise Exception("Unknown mode {}".format(self.mode))
 
 @contextmanager
-def skip_assert(skip = True):
+def skip_asserts(skip = True):
     try:
         old_debug = NamedTensorOp.instance()._enabled
         NamedTensorOp.instance()._enabled = not skip
