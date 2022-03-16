@@ -347,6 +347,7 @@ class NamedTensorOp:
     
 
     def __floordiv__(self,other):
+        if not self._enabled: return self
         if isinstance(other,list) or isinstance(other, tuple):
             if not all(isinstance(x,int) for x in other):
                 raise ValueError(f"Expected list of integers, got {other}")
@@ -370,7 +371,11 @@ class NamedTensorOp:
                 result.mode = "model"
             return result
         else:
-            return NotImplemented
+            raise NotImplementedError()
+    
+    def __rand__(self,other):
+        if not self._enabled: return other
+        raise ValueError("Can't use & operator without first binding to an expression via //")
 
 
 
