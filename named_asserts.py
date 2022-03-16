@@ -1,38 +1,37 @@
 ############################################
-# Helper classes for keeping track of named tensor dimensions
+# Helper classes for making assertions about named tensor dimensions
 # General idea:
-# To say that a tensor T has dimensions  ['batch','width','height','channels']
-# We write: T &nt // "batch width height channels"
-#
+# We write: T &nt // "batch=1024, channels=3, height=32, width=32" 
+# to assert that T's shape is (1024,3,32,32) and to update the global
+# named dimensions batch, channels,height, width to these values.
+
+# We can access these with nt.batch, nt.width etc
+# In future declarations we can write expressions such as: Q &nt // "batch, channels*(height+1), width"
+
 # To say that a model maps ['batch','width','height','channels'] to ['batch','output']
 # We we write: model &nt // "batch, width, height, channels -> batch, output"
-# (Commas can be dropped when they are not needed)
 
-# To update a dimension we can use an excalamation mark.
-# For example, if T has shape (10,2,3) then T &nt // "!batch width height"
-# will update batch and and assert that width and height are 2 and 3 respectively.
-# We can also write T &nt // "batch =10, width, height"
 
-# Dependencies: torch, einops
+# Dependencies: torch, einops (optional)
 
 import torch
 import re
-import ast
-
-try:
-    import einops
-    einops_available = True
-    from einops import rearrange
-except ImportError:
-    einops_available = False
-    print("Warning: einops not available, some functionality will be disabled")
-    def rearrange(*args, **kwargs):
-        raise ImportError("einops not available")
-
+import inspect
+import sys
 from contextlib import contextmanager
 
+def _trunc(s, maxlen=30):
+    if isinstance(s, torch.Tensor):
+        s = str(s)[6:]
+    else:
+        s = str(s)
+    if len(s) > maxlen:
+        return s[:maxlen-2] + '..'
+    return s
 
 # From https://stackoverflow.com/a/47130538
+# Right now not used, but might be used in the future
+import ast
 def exec_return(script, globals=None, locals=None, allow_statement=True):
     '''Execute a script and return the value of the last expression
     Modification: if last line contains :=, we add parenthesis around it
@@ -125,7 +124,7 @@ class NamedTensorOp:
     '''
 
     def __init__(self):
-        self.__dict__.update(dict(dims = {}, _enabled = True,  bound_exp = None , dims_in = None, dims_out  = None, type_out = None))
+        self.__dict__.update(dict(dims = {}, _enabled = True,  bound_exp = None , dims_in = None, dims_out  = None, type_out = None, no_logs = False))
     
     def __setattr__(self, __name, __value):
         if __name in self.__dict__:
@@ -144,7 +143,12 @@ class NamedTensorOp:
         """Return a tuple while also updating dimensions from keyword arugments"""
         D = {k:v for k,v in kwargs.items() if isinstance(k,str) and (k[0]!='_')}
         self.set(**D)
-        return tuple(args + tuple(kwargs.values()))
+        if len(kwargs.values()):
+            return args + tuple(kwargs.values())
+        return args 
+
+    def log(self,msg):
+        if not self.no_logs: print(msg, file=sys.stderr)
 
         
     def set(self,**vals):
@@ -152,9 +156,9 @@ class NamedTensorOp:
             if not k.isidentifier():
                 raise ValueError(f"Invalid dimension name {k}")
             if (k in self.dims) and (v != self.dims[k]):
-                print("Warning: Overwriting  {} from {} to {}".format(k,self.dims[k],v))
+                _log("Warning: Overwriting  {} from {} to {}".format(k,self.dims[k],v))
             if not k in self.dims:
-                print(f"Updating {k} to {v}")
+                _log(f"Updating {k} to {v}")
             self.dims[k]=v
 
     
@@ -164,12 +168,12 @@ class NamedTensorOp:
     def disable(self):
         self._enabled = False
 
-    def eval_dims(self,exp):
+    def eval_dims(self,exp,context={}):
         try:
             result = eval(
-                f"NamedTensorOp.instance()({exp})", globals(), self.dims)
+                f"NamedTensorOp.instance()({exp})", {**globals(),**context}, self.dims)
         except Exception as e:
-            raise ValueError(f"Could not evaluate dimension expression: {exp}: {e} [evaluated wrt {self.dims}]")
+            raise ValueError(f"Could not evaluate dimension expression: {exp}: {e} [evaluated wrt {self.dims},  {context}]")
         return result
     
     #https://gist.github.com/rockt/a3191f517728ea9a136a204f578d27c8
@@ -193,7 +197,7 @@ class NamedTensorOp:
         return exp
 
 
-    def validate_exp(self,exp):
+    def validate_exp(self,exp, context={}):
         origin_exp = exp
         if '-->' in exp:
             raise ValueError("--> is not allowed in the expression {exp}, use -> instead")
@@ -211,7 +215,7 @@ class NamedTensorOp:
             e = self.preprocess_exp(e)
             if e:
                 try:
-                    self.eval_dims(e)
+                    self.eval_dims(e,context)
                 except Exception as exception:
                     raise ValueError(f"Dimension expression not valid: {e} in the expression {origin_exp}: {exception}")
             
@@ -231,69 +235,82 @@ class NamedTensorOp:
             exp = exp[1:-1]
         return exp
 
-    def assert_integer(self,I_,exp):
+    def assert_integer(self,I_,exp,context={}):
         try:
             I = int(I_)
         except:
             raise ValueError(f"{exp} must be an integer, got {I}")
-        val = self.eval_dims(exp)
+        val = self.eval_dims(exp,context)
         assert len(val) == 1, f"{exp} must be a single integer, got {val}"
-        assert val[0] == I, f"Dimension {name_} must be {I}, got {val[0]}"
+        assert val[0] == I, f"Dimension {exp} must be {I}, got {val[0]}"
         return I_
 
             
+    
 
 
 
-
-    def assert_tensor_dims(self,T, exp):
+    def assert_tensor_dims(self,T, exp, context={}):
         """Assert tensor T has the dimensions specified by exp"""
         if not self._enabled: return T
         try:
-            shape = self.eval_dims(exp)
+            shape = self.eval_dims(exp,context)
         except Exception as e:
             raise ValueError(f"Dimension expression not valid: {exp}: {e}")
-        assert len(shape)==len(T.shape), f"Dimension expression {exp} must have the same number of dimensions as the tensor {T}, got {shape} vs {T.shape}"
-        assert shape == T.shape, f"Dimension expression {exp} must have the same dimensions as the tensor {T}, got {shape} vs {T.shape}"
+        assert len(shape)==len(T.shape), f"Dimension expression {exp} must have the same number of dimensions as the tensor {_trunc(T)}, got {shape} vs {T.shape}"
+        assert shape == T.shape, f"Dimension expression {exp} must have the same dimensions as the tensor {_trunc(T)}, got {shape} vs {T.shape}"
         return T
     
-    def assert_model_dims(self,model,exp_in,exp_out):
+    def assert_model_dims(self,model,exp_in,exp_out, context={}):
         if not self._enabled: return model
         try:
-            shape_in = self.eval_dims(exp_in)
+            shape_in = self.eval_dims(exp_in,context)
         except Exception as e:
-            raise ValueError(f"Dimension expression not valid: {exp_in}: {e}")
+            raise ValueError(f"Input dimension expression not valid: {exp_in}: {e}")
         try:
-            shape_out = self.eval_dims(exp_out)
+            shape_out = self.eval_dims(exp_out,context)
         except Exception as e:
-            raise ValueError(f"Dimension expression not valid: {exp_out}: {e}")
+            raise ValueError(f"Output dimension expression not valid: {exp_out}: {e}")
+        device = torch.device("cpu")
         try:
             device = next(model.parameters()).device
+        except Exception as e:
+            pass
+        try:
             x = torch.randn(*shape_in, device = device)
         except Exception as e:
-            print(
+            _log(
                 f"Error in creating input on {device} while asserting model {model} wrt {shape_in}->{shape_out} ({e}, {exp_in}->{exp_out})")
             raise e
-        self.assert_tensor_dims(x,shape_in)
+        try:
+            self.assert_tensor_dims(x,exp_in, context=context)
+        except Exception as e:
+            _log(f"Error in asserting input dimension {shape_in} (expression {exp_in}->{exp_out}), input shape {x.shape}")
+            raise e
+
         try:
             y = model(x)
         except Exception as e:
-            print(f"Error in evaluating {model} on tensor of {x.shape} (device= {device}) while asserting model {model} wrt {shape_in}->{shape_out} ({e}, {exp_in}->{exp_out})")
+            _log(f"Error in evaluating {model} on tensor of {x.shape} (device= {device}) while asserting model {model} wrt {shape_in}->{shape_out} ({e}, {exp_in}->{exp_out})")
             raise e
-        self.assert_tensor_dims(y,shape_out)
+        try:
+            self.assert_tensor_dims(y, exp_out, context=context)
+        except Exception as e:
+            _log(f"Error in asserting output dimension {shape_out} (expression {exp_in}->{exp_out}), output shape {y.shape}")
+            raise e
         return model
     
 
     
-    def rearrange(self,T, exp):
+    def rearrange(self,T, exp, context= {}):
         in_dims = self.preprocess_exp(exp[:exp.index('->')])
         out_dims = self.preprocess_exp(exp[exp.index('->')+2:])
-        T = self.assert_tensor_dims(T, *in_dims)
+        T = self.assert_tensor_dims(T, *in_dims, context= context)
         T =rearrange(T, exp)
-        T =self.assert_tensor_dims(T, *out_dims)
+        T =self.assert_tensor_dims(T, *out_dims, context= context)
         return T
     
-    def einsum(self,exp,*args):
+    def einsum(self,exp,*args, context={}):
         out_dims = None
         if exp.index(": ")>0:
             out_dims = self.preprocess_exp(exp[exp.index(": ")+2:])
@@ -301,10 +318,10 @@ class NamedTensorOp:
         exps_in = exp[:exp.index('->')].split(',')
         assert len(exps_in) == len(args), "Expected {} args, got {}".format(len(exps_in), len(args))
         for i,T in enumerate(args):
-            self.assert_tensor_dims(T, self.preprocess_exp(exps_in[i]))
+            self.assert_tensor_dims(T, self.preprocess_exp(exps_in[i]), context= context)
         out = torch.einsum(self.einsumfy_exp(exp), *args)
         if out_dims:
-            self.assert_tensor_dims(out, out_dims)
+            self.assert_tensor_dims(out, out_dims, context= context)
         return out 
             
     def parse_exp(self,exp):
@@ -326,11 +343,18 @@ class NamedTensorOp:
         if isinstance(other,list) or isinstance(other, tuple):
             if not all(isinstance(x,int) for x in other):
                 raise ValueError(f"Expected list of integers, got {other}")
-            print(f'Warning: expression is a list or tuple, interpreting as "{str(other)}"')
+            _log(f'Warning: expression is a list or tuple, interpreting as "{str(other)}"')
             other = str(other)
         if isinstance(other, str):
-            self.validate_exp(other)
             result = BoundNTOp()
+            context = {}
+            try:
+                frame = inspect.currentframe().f_back
+                context = dict(frame.f_locals)
+            except Exception as e:
+                _log(f"Couldn't get local variables {e}")
+            result.context = context 
+            self.validate_exp(other, context=context)
             result.bound_exp = other
             result.dims_in, result.dims_out = self.parse_exp(other)
             if result.dims_out is None:
@@ -354,6 +378,7 @@ class BoundNTOp:
         self.bound_exp = None
         self.dims_in = None
         self.dims_out = None
+        self.context = {}
 
 
     def __rand__(self,other):
@@ -361,26 +386,40 @@ class BoundNTOp:
         if not self.nt._enabled: return other
         if self.mode == "tensor":
             if isinstance(other, int):
-                return self.nt.assert_integer(other, self.dims_in)
-            return self.nt.assert_tensor_dims(other, self.dims_in)
+                return self.nt.assert_integer(other, self.dims_in, context=self.context)
+            return self.nt.assert_tensor_dims(other, self.dims_in , context=self.context)
         if self.mode == "model":
-            return self.nt.assert_model_dims(other, self.dims_in, self.dims_out)
+            return self.nt.assert_model_dims(other, self.dims_in, self.dims_out, context=self.context)
         if self.mode == "einops":
-            return self.nt.einops(self.bound_exp, other)
+            return self.nt.einsum(self.bound_exp, other, context=self.context)
         if self.mode == "rearrange":
-            return self.nt.rearrange(other, self.bound_exp)
+            return self.nt.rearrange(other, self.bound_exp, context=self.context)
         raise Exception("Unknown mode {}".format(self.mode))
 
-nt= NamedTensorOp.instance()
-
-            
-
 @contextmanager
-def skip_assert(debug = False):
+def skip_assert(skip = True):
     try:
         old_debug = NamedTensorOp.instance()._enabled
-        NamedTensorOp.instance()._enabled = debug
+        NamedTensorOp.instance()._enabled = not skip
         yield
     finally:
         NamedTensorOp.instance()._enabled = old_debug
+
+
+nt= NamedTensorOp.instance()
+
+def _log(msg):
+    NamedTensorOp.instance().log(msg)
+
+try:
+    import einops
+    einops_available = True
+    from einops import rearrange
+except ImportError:
+    einops_available = False
+    _log("Warning: einops not available, some functionality will be disabled")
+    def rearrange(*args, **kwargs):
+        raise ImportError("einops not available")
+
+            
 
