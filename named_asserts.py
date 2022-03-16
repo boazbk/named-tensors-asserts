@@ -182,6 +182,11 @@ class NamedTensorOp:
         exp = exp.replace(',',' ')
         names = set(re.split("[, \(\)]|->", exp))
         names.remove("")
+        for name in names:
+            if (name == "...") or (len(name) == 1):
+                continue
+            if not name in NamedTensorOp.instance().dims:
+                _log(f"Warning: {name} not found in dimensions")
 
         invalid_names = set(filter(lambda x: len(x) > 1, names))
         if "..." in invalid_names:
@@ -305,9 +310,9 @@ class NamedTensorOp:
     def rearrange(self,T, exp, context= {}):
         in_dims = self.preprocess_exp(exp[:exp.index('->')])
         out_dims = self.preprocess_exp(exp[exp.index('->')+2:])
-        T = self.assert_tensor_dims(T, *in_dims, context= context)
+        T = self.assert_tensor_dims(T, in_dims, context= context)
         T =rearrange(T, exp)
-        T =self.assert_tensor_dims(T, *out_dims, context= context)
+        T =self.assert_tensor_dims(T, out_dims, context= context)
         return T
     
     def einsum(self,exp,*args, context={}):
@@ -315,11 +320,13 @@ class NamedTensorOp:
         if exp.index(": ")>0:
             out_dims = self.preprocess_exp(exp[exp.index(": ")+2:])
             exp = exp[:exp.index(": ")]
-        exps_in = exp[:exp.index('->')].split(',')
+        exps_in = exp[:exp.index('->')].split(';') # use semi-colon to separate expressions for more than one tensor
         assert len(exps_in) == len(args), "Expected {} args, got {}".format(len(exps_in), len(args))
         for i,T in enumerate(args):
             self.assert_tensor_dims(T, self.preprocess_exp(exps_in[i]), context= context)
-        out = torch.einsum(self.einsumfy_exp(exp), *args)
+        ein_exp = ', '.join([self.einsumfy_exp(e) for e in exps_in])
+        ein_exp += f" -> {self.einsumfy_exp(exp[exp.index('->')+2:])}"
+        out = torch.einsum(ein_exp, *args)
         if out_dims:
             self.assert_tensor_dims(out, out_dims, context= context)
         return out 
