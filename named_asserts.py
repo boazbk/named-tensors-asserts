@@ -249,7 +249,8 @@ class NamedTensorOp:
                 else:
                     raise AssertionError(f"Dimension name not valid identifier: {name_}")
         else:
-            assert (val := self.eval_dim(name_)) == I, f"Dimension {name_} must be {I}, got {val}"
+            val = self.eval_dim(name_)
+            assert val == I, f"Dimension {name_} must be {I}, got {val}"
         return I_
 
             
