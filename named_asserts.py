@@ -19,6 +19,7 @@ import re
 import inspect
 import sys
 from contextlib import contextmanager
+from functools import wraps 
 
 def _trunc(s, maxlen=30):
     if isinstance(s, torch.Tensor):
@@ -416,6 +417,7 @@ def skip_asserts(skip = True):
         yield
     finally:
         NamedTensorOp.instance()._enabled = old_debug
+
 
 
 nt= NamedTensorOp.instance()
